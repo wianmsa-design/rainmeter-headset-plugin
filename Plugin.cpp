@@ -110,7 +110,7 @@ struct Measure
 
         if (output.find(L"BATTERY_CHARGING") != std::wstring::npos)
         {
-            batteryLevel = -1.0;
+            batteryLevel = -2.0;
             batteryString = L"Charging";
             return;
         }
