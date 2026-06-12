@@ -167,7 +167,7 @@ struct Measure
     double GetValue()
     {
         std::lock_guard<std::mutex> guard(lock);
-        return batteryLevel >= 0.0 ? batteryLevel : 0.0;
+        return batteryLevel;
     }
 
     std::wstring GetStr()
