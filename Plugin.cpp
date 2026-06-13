@@ -4,6 +4,8 @@
 #include <mutex>
 #include <atomic>
 #include <regex>
+#include <fstream>
+#include <shlobj.h>
 
 typedef void* LPRAINMETER;
 typedef void* (*RmReadStringFunc)(LPRAINMETER rm, LPCWSTR option, LPCWSTR defValue, BOOL replaceMeasures);
@@ -27,13 +29,36 @@ static void LoadRainmeterFunctions()
     }
 }
 
-// Numeric value returned by Update():
-//   >= 0  : live battery percentage (headset on)
-//   -2.0  : charging
-//   -3.0  : off / unavailable / never seen
-//
-// GetString() returns: "Charging", "Off", or the percentage as a number string
-// GetLastKnown() returns the last valid reading for display when off/charging
+static std::wstring GetCachePath()
+{
+    wchar_t path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, path)))
+    {
+        return std::wstring(path) + L"\\Rainmeter\\HeadsetBatteryCache.txt";
+    }
+    return L"C:\\HeadsetBatteryCache.txt";
+}
+
+static double LoadCachedLevel()
+{
+    std::wifstream f(GetCachePath());
+    if (f.is_open())
+    {
+        double val = -1.0;
+        f >> val;
+        if (val >= 0.0 && val <= 100.0)
+            return val;
+    }
+    return -1.0;
+}
+
+static void SaveCachedLevel(double level)
+{
+    if (level < 0.0 || level > 100.0) return;
+    std::wofstream f(GetCachePath());
+    if (f.is_open())
+        f << (int)level;
+}
 
 struct Measure
 {
@@ -113,12 +138,14 @@ struct Measure
             return;
         }
 
-        // Extract level first - present in both charging and active states
+        // Extract level - present in both charging and active states
         std::wregex levelRegex(L"\"level\"\\s*:\\s*(\\d+)");
         std::wsmatch match;
         if (std::regex_search(output, match, levelRegex))
         {
-            lastKnownLevel = (double)std::stoi(match[1].str());
+            double newLevel = (double)std::stoi(match[1].str());
+            lastKnownLevel = newLevel;
+            SaveCachedLevel(newLevel);
         }
 
         if (output.find(L"BATTERY_CHARGING") != std::wstring::npos)
@@ -135,10 +162,13 @@ struct Measure
             return;
         }
 
-        if (lastKnownLevel >= 0.0 && std::regex_search(output, match, levelRegex))
+        if (lastKnownLevel >= 0.0)
         {
             batteryLevel = lastKnownLevel;
-            batteryString = match[1].str();
+            // Convert to wstring
+            wchar_t buf[16];
+            swprintf(buf, 16, L"%d", (int)lastKnownLevel);
+            batteryString = buf;
         }
         else
         {
@@ -161,6 +191,8 @@ struct Measure
     {
         if (!running)
         {
+            // Load cached level so we have something to show immediately
+            lastKnownLevel = LoadCachedLevel();
             running = true;
             pollThread = std::thread(&Measure::PollLoop, this);
         }
@@ -176,15 +208,7 @@ struct Measure
     double GetValue()
     {
         std::lock_guard<std::mutex> guard(lock);
-        // Always return last known level as numeric so bar/conditions work
-        // State is communicated via GetString
         return lastKnownLevel >= 0.0 ? lastKnownLevel : 0.0;
-    }
-
-    double GetState()
-    {
-        std::lock_guard<std::mutex> guard(lock);
-        return batteryLevel;
     }
 
     std::wstring GetStr()
