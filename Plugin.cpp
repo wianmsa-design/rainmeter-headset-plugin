@@ -64,6 +64,7 @@ struct SharedState
     std::mutex lock;
     double lastKnownLevel = -1.0;  // last valid battery %
     int state = 0;                  // 0=off, 1=charging, 2=live
+    int debounceCount = 0;          // holds charging state for N polls
 
     std::wstring headsetControlPath = L"C:\\Tools\\HeadsetControl\\headsetcontrol.exe";
     int updateIntervalSeconds = 300;
@@ -139,13 +140,25 @@ struct SharedState
         if (output.find(L"BATTERY_CHARGING") != std::wstring::npos)
         {
             state = 1;
+            debounceCount = 3; // hold charging state for 3 polls
             return;
         }
 
         if (output.find(L"BATTERY_UNAVAILABLE") != std::wstring::npos)
         {
+            if (debounceCount > 0)
+            {
+                debounceCount--;
+                return; // keep current state
+            }
             state = 0;
             return;
+        }
+
+        if (debounceCount > 0)
+        {
+            debounceCount--;
+            return; // keep current state
         }
 
         if (lastKnownLevel >= 0.0)
