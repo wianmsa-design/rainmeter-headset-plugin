@@ -208,7 +208,9 @@ struct Measure
     double GetValue()
     {
         std::lock_guard<std::mutex> guard(lock);
-        return lastKnownLevel >= 0.0 ? lastKnownLevel : 0.0;
+        if (batteryString == L"Charging") return 101.0;
+        if (batteryString == L"Off") return 102.0;
+        return lastKnownLevel >= 0.0 ? lastKnownLevel : 102.0;
     }
 
     std::wstring GetStr()
