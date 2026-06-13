@@ -4,15 +4,12 @@
 #include <mutex>
 #include <atomic>
 #include <regex>
-#include <sstream>
 
-// Rainmeter API types
 typedef void* LPRAINMETER;
 typedef void* (*RmReadStringFunc)(LPRAINMETER rm, LPCWSTR option, LPCWSTR defValue, BOOL replaceMeasures);
 typedef double (*RmReadFormulaFunc)(LPRAINMETER rm, LPCWSTR option, double defValue);
 typedef void (*RmLogFunc)(LPRAINMETER rm, int level, LPCWSTR message);
 
-// Load Rainmeter functions dynamically
 static HMODULE g_rainmeter = nullptr;
 static RmReadStringFunc RmReadString = nullptr;
 static RmReadFormulaFunc RmReadFormula = nullptr;
@@ -30,14 +27,23 @@ static void LoadRainmeterFunctions()
     }
 }
 
+// Numeric value returned by Update():
+//   >= 0  : live battery percentage (headset on)
+//   -2.0  : charging
+//   -3.0  : off / unavailable / never seen
+//
+// GetString() returns: "Charging", "Off", or the percentage as a number string
+// GetLastKnown() returns the last valid reading for display when off/charging
+
 struct Measure
 {
     std::wstring headsetControlPath = L"C:\\Tools\\HeadsetControl\\headsetcontrol.exe";
     int updateIntervalSeconds = 300;
 
     std::mutex lock;
-    double batteryLevel = -1.0;
-    std::wstring batteryString = L"N/A";
+    double batteryLevel = -3.0;
+    double lastKnownLevel = -1.0;
+    std::wstring batteryString = L"Off";
 
     std::thread pollThread;
     std::atomic<bool> running{ false };
@@ -88,7 +94,6 @@ struct Measure
         CloseHandle(pi.hThread);
         CloseHandle(hReadPipe);
 
-        // Convert UTF-8 output to wstring
         int wlen = MultiByteToWideChar(CP_UTF8, 0, output.c_str(), -1, nullptr, 0);
         std::wstring result(wlen, 0);
         MultiByteToWideChar(CP_UTF8, 0, output.c_str(), -1, &result[0], wlen);
@@ -103,9 +108,17 @@ struct Measure
 
         if (output.empty())
         {
-            batteryLevel = -1.0;
-            batteryString = L"Error";
+            batteryLevel = -3.0;
+            batteryString = L"Off";
             return;
+        }
+
+        // Extract level first - present in both charging and active states
+        std::wregex levelRegex(L"\"level\"\\s*:\\s*(\\d+)");
+        std::wsmatch match;
+        if (std::regex_search(output, match, levelRegex))
+        {
+            lastKnownLevel = (double)std::stoi(match[1].str());
         }
 
         if (output.find(L"BATTERY_CHARGING") != std::wstring::npos)
@@ -117,24 +130,20 @@ struct Measure
 
         if (output.find(L"BATTERY_UNAVAILABLE") != std::wstring::npos)
         {
-            batteryLevel = -1.0;
-            batteryString = L"N/A";
+            batteryLevel = -3.0;
+            batteryString = L"Off";
             return;
         }
 
-        // Extract "level": <number>
-        std::wregex levelRegex(L"\"level\"\\s*:\\s*(\\d+)");
-        std::wsmatch match;
-        if (std::regex_search(output, match, levelRegex))
+        if (lastKnownLevel >= 0.0 && std::regex_search(output, match, levelRegex))
         {
-            int level = std::stoi(match[1].str());
-            batteryLevel = (double)level;
+            batteryLevel = lastKnownLevel;
             batteryString = match[1].str();
         }
         else
         {
-            batteryLevel = -1.0;
-            batteryString = L"N/A";
+            batteryLevel = -3.0;
+            batteryString = L"Off";
         }
     }
 
@@ -167,6 +176,14 @@ struct Measure
     double GetValue()
     {
         std::lock_guard<std::mutex> guard(lock);
+        // Always return last known level as numeric so bar/conditions work
+        // State is communicated via GetString
+        return lastKnownLevel >= 0.0 ? lastKnownLevel : 0.0;
+    }
+
+    double GetState()
+    {
+        std::lock_guard<std::mutex> guard(lock);
         return batteryLevel;
     }
 
@@ -176,8 +193,6 @@ struct Measure
         return batteryString;
     }
 };
-
-// ---- Rainmeter plugin exports ----
 
 extern "C" __declspec(dllexport)
 void Initialize(void** data, LPRAINMETER rm)
